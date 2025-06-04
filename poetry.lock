@@ -130,6 +130,18 @@ files = [
 all = ["flake8 (>=7.1.1)", "mypy (>=1.11.2)", "pytest (>=8.3.2)", "ruff (>=0.6.2)"]
 
 [[package]]
+name = "imaplib2"
+version = "3.6"
+description = "A threaded Python IMAP4 client."
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+files = [
+    {file = "imaplib2-3.6-py3-none-any.whl", hash = "sha256:8d51b9bf6b7be99ea3caf4503bb15c7299f626b8d2bb6139e6055cf2613aac6a"},
+    {file = "imaplib2-3.6.tar.gz", hash = "sha256:96cb485b31868a242cb98d5c5dc67b39b22a6359f30316de536060488e581e5b"},
+]
+
+[[package]]
 name = "numpy"
 version = "2.2.6"
 description = "Fundamental package for array computing in Python"
@@ -428,4 +440,4 @@ zstd = ["zstandard (>=0.18.0)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "08b5cae041728c80311247e5546f71c113fca8f66bcfd25c5e45f5f10d66bf90"
+content-hash = "a11179f266b77b2ee3974c54ae40ad81348228d9cd6ceffbaf9161112eea5317"
