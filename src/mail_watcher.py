@@ -1,24 +1,30 @@
+import os
 import imaplib
 import email
-import os
 import logging
-import shutil
-import tempfile
-from email.header import decode_header
 import time
-import threading
+from threading import Thread, Lock
+from email.header import decode_header
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 import pytz
-from contextlib import contextmanager
 import sqlite3
+import pandas as pd
+import re
 
-# === НАСТРОЙКИ ===
-EMAIL = 'almazgeobur.it@mail.ru'
-PASSWORD = 'K7cAiTCjvVn50YiHqdnp'
-IMAP_SERVER = 'imap.mail.ru'
-TARGET_SENDER = '1c@almazgeobur.kz'
-DB_FILE = 'products.db'
-EXCEL_FILENAME = 'для бота.xlsx'
+# Загрузка переменных окружения
+load_dotenv()
+
+# === НАСТРОЙКИ ИЗ .env ===
+EMAIL = os.getenv('EMAIL')
+EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')
+IMAP_SERVER = os.getenv('IMAP_SERVER')
+TARGET_SENDER = os.getenv('TARGET_SENDER')
+EXCEL_FILENAME = 'bot_data.xlsx'  # Изменено название файла
+DB_FILE = os.getenv('DB_FILE')
+
+# Московский часовой пояс
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 # Настройка логгера
 logging.basicConfig(
@@ -31,8 +37,108 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Московский часовой пояс
-MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+db_lock = Lock()
+
+class DatabaseManager:
+    def __init__(self, db_file):
+        self.db_file = db_file
+        self._initialize_db()
+
+    def _initialize_db(self):
+        """Инициализация базы данных с новой структурой"""
+        with db_lock:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period TEXT,
+                    article TEXT,
+                    article_clean TEXT,
+                    name TEXT,
+                    code TEXT,
+                    warehouse TEXT,
+                    quantity REAL,
+                    price REAL,
+                    currency TEXT,
+                    price_date TEXT,
+                    last_updated TIMESTAMP
+                )
+            ''')
+
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_article_clean ON products (article_clean)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_warehouse ON products (warehouse)')
+
+            conn.commit()
+            conn.close()
+
+    def update_from_excel(self, excel_file):
+        """Обновление базы данных из Excel файла с новой структурой"""
+        if not os.path.exists(excel_file):
+            logger.error(f"Файл {excel_file} не найден.")
+            return False
+
+        try:
+            logger.info(f"📂 Загружаю Excel-файл {excel_file}...")
+            df = pd.read_excel(excel_file)
+            df = df.where(pd.notnull(df), None)
+
+            # Нормализация артикулов
+            df['article_clean'] = df['Артикул'].apply(lambda x: re.sub(r'[^\d]', '', str(x)))
+
+            with db_lock:
+                conn = sqlite3.connect(self.db_file)
+                cursor = conn.cursor()
+
+                cursor.execute('DELETE FROM products')
+
+                for _, row in df.iterrows():
+                    cursor.execute('''
+                        INSERT INTO products (
+                            period, article, article_clean, name, code,
+                            warehouse, quantity, price, currency, price_date, last_updated
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        row.get('Период'),
+                        row.get('Артикул'),
+                        row['article_clean'],
+                        row.get('Номенклатура'),
+                        row.get('Номенклатура.Код'),
+                        row.get('Склад'),
+                        row.get('Остаток'),
+                        row.get('Цена'),
+                        row.get('Валюта'),
+                        row.get('Дата установки цены'),
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    ))
+
+                conn.commit()
+                conn.close()
+
+            logger.info(f"✅ База данных успешно обновлена. Записей: {len(df)}")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении базы данных: {e}")
+            return False
+
+    def search_products(self, article_clean):
+        """Поиск продуктов по артикулу"""
+        with db_lock:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT * FROM products 
+                WHERE article_clean = ?
+                ORDER BY warehouse, period DESC
+            ''', (article_clean,))
+
+            columns = [column[0] for column in cursor.description]
+            results = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+            conn.close()
+            return results
 
 
 def decode_mail_header(header):
@@ -47,99 +153,9 @@ def decode_mail_header(header):
 
 
 def is_target_email(msg):
-    """Проверяет, является ли письмо целевым (от нужного отправителя)"""
+    """Проверяет, является ли письмо целевым"""
     from_email = msg.get('From', '')
     return TARGET_SENDER.lower() in from_email.lower()
-
-
-@contextmanager
-def atomic_file_replace(filename):
-    """Контекстный менеджер для атомарной замены файла"""
-    temp_dir = tempfile.gettempdir()
-    temp_path = os.path.join(temp_dir, f"temp_{os.path.basename(filename)}")
-    backup_path = os.path.join(temp_dir, f"backup_{os.path.basename(filename)}")
-
-    try:
-        if os.path.exists(filename):
-            shutil.copy2(filename, backup_path)
-
-        yield temp_path
-
-        if os.path.exists(temp_path):
-            if os.path.exists(filename):
-                os.unlink(filename)
-            shutil.move(temp_path, filename)
-
-    except Exception as e:
-        logger.error(f"Ошибка при замене файла: {e}")
-        if os.path.exists(backup_path) and not os.path.exists(filename):
-            shutil.copy2(backup_path, filename)
-        raise
-    finally:
-        for path in [temp_path, backup_path]:
-            try:
-                if os.path.exists(path):
-                    os.unlink(path)
-            except Exception:
-                pass
-
-
-def update_database_from_excel(excel_file):
-    """Обновляет базу данных из Excel файла"""
-    if not os.path.exists(excel_file):
-        logger.error(f"Файл {excel_file} не найден.")
-        return False
-
-    try:
-        logger.info(f"Обновление базы данных из файла {excel_file}...")
-
-        # Подключение к базе данных
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-
-        # Чтение Excel файла
-        df = pd.read_excel(excel_file, sheet_name=0)
-        df = df.astype(str)
-
-        # Нормализация артикулов
-        df['Артикул_clean'] = df['Артикул'].apply(lambda x: re.sub(r'[^\d]', '', str(x)))
-        df['Артикул_with_spaces'] = df['Артикул'].apply(
-            lambda x: ' '.join(re.findall(r'\d+', str(x)))
-        )
-
-        # Очистка таблицы перед обновлением
-        cursor.execute('DELETE FROM products')
-
-        # Вставка новых данных
-        for _, row in df.iterrows():
-            cursor.execute('''
-                INSERT INTO products (
-                    article, article_clean, article_with_spaces, name, code, 
-                    warehouse, quantity, price, currency, last_updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                row['Артикул'],
-                row['Артикул_clean'],
-                row['Артикул_with_spaces'],
-                row.get('Номенклатура', ''),
-                row.get('Номенклатура.Код', ''),
-                row.get('Склад', ''),
-                row.get('Остаток', ''),
-                row.get('Цена', ''),
-                row.get('Валюта', ''),
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            ))
-
-        conn.commit()
-        logger.info(f"База данных успешно обновлена. Записей: {len(df)}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении базы данных: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
 
 
 def download_latest_excel():
@@ -147,10 +163,9 @@ def download_latest_excel():
     mail = None
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
-        mail.login(EMAIL, PASSWORD)
-        mail.select(MAILBOX)
+        mail.login(EMAIL, EMAIL_PASSWORD)
+        mail.select('INBOX')
 
-        # Ищем непрочитанные письма от целевого отправителя
         status, messages = mail.search(None, f'(FROM "{TARGET_SENDER}" UNSEEN)')
         if status != 'OK':
             logger.warning("Не удалось выполнить поиск писем")
@@ -161,7 +176,7 @@ def download_latest_excel():
             logger.info("Нет новых писем от целевого отправителя")
             return False
 
-        for msg_id in message_ids[::-1]:  # Обрабатываем от новых к старым
+        for msg_id in message_ids[::-1]:
             status, msg_data = mail.fetch(msg_id, '(RFC822)')
             if status != 'OK':
                 continue
@@ -185,15 +200,11 @@ def download_latest_excel():
                     continue
 
                 try:
-                    with atomic_file_replace(EXCEL_FILENAME) as temp_file:
-                        with open(temp_file, 'wb') as f:
-                            f.write(part.get_payload(decode=True))
+                    with open(EXCEL_FILENAME, 'wb') as f:
+                        f.write(part.get_payload(decode=True))
 
                     logger.info(f"Файл {filename} успешно сохранен как {EXCEL_FILENAME}")
-
-                    # Помечаем письмо как прочитанное
                     mail.store(msg_id, '+FLAGS', '\\Seen')
-
                     return True
                 except Exception as e:
                     logger.error(f"Ошибка при сохранении файла: {e}")
@@ -202,11 +213,8 @@ def download_latest_excel():
         logger.info("Не найдено подходящих писем с Excel-файлами")
         return False
 
-    except imaplib.IMAP4.error as e:
-        logger.error(f"Ошибка IMAP: {e}")
-        return False
     except Exception as e:
-        logger.error(f"Неожиданная ошибка: {e}")
+        logger.error(f"Ошибка: {e}")
         return False
     finally:
         if mail:
@@ -216,50 +224,35 @@ def download_latest_excel():
                 pass
 
 
-def calculate_next_run_time():
-    """Вычисляет время следующего запуска в 20:00 по Москве"""
-    now = datetime.now(MOSCOW_TZ)
-    target_time = now.replace(hour=20, minute=0, second=0, microsecond=0)
+def run_daily_update():
+    """Запускает ежедневное обновление в 20:00 по Москве"""
+    db_manager = DatabaseManager(DB_FILE)
 
-    # Если сегодняшнее время уже прошло, планируем на завтра
-    if now >= target_time:
-        target_time += timedelta(days=1)
-
-    return target_time
-
-
-def run_daily_check():
-    """Запускает ежедневную проверку почты в 20:00 по Москве"""
     while True:
         try:
-            next_run = calculate_next_run_time()
             now = datetime.now(MOSCOW_TZ)
+            target_time = now.replace(hour=20, minute=0, second=0, microsecond=0)
 
-            sleep_seconds = (next_run - now).total_seconds()
-            logger.info(
-                f"Следующая проверка почты в {next_run.strftime('%Y-%m-%d %H:%M:%S')} (через {sleep_seconds / 3600:.1f} часов)")
+            if now >= target_time:
+                target_time += timedelta(days=1)
+
+            sleep_seconds = (target_time - now).total_seconds()
+            logger.info(f"Следующая проверка в {target_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
             time.sleep(sleep_seconds)
 
-            logger.info("Начало ежедневной проверки почты...")
+            logger.info("Начало ежедневного обновления...")
             if download_latest_excel():
-                if update_database_from_excel(EXCEL_FILENAME):
-                    logger.info("База данных успешно обновлена из почты")
+                if db_manager.update_from_excel(EXCEL_FILENAME):
+                    logger.info("✅ База данных успешно обновлена")
                 else:
-                    logger.error("Не удалось обновить базу данных из почты")
+                    logger.error("❌ Не удалось обновить базу данных")
 
         except Exception as e:
-            logger.error(f"Ошибка в потоке проверки почты: {e}")
-            time.sleep(3600)  # Ждем час при ошибке
+            logger.error(f"Ошибка в потоке обновления: {e}")
+            time.sleep(3600)
 
 
 if __name__ == '__main__':
-    # Запускаем проверку почты в отдельном потоке
-    mail_thread = threading.Thread(target=run_daily_check, daemon=True)
-    mail_thread.start()
-
-    try:
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        logger.info("Остановка почтового watcher'а")
+    logger.info("Запуск сервиса обновления базы данных...")
+    run_daily_update()
