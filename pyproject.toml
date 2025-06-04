@@ -10,7 +10,8 @@ requires-python = ">=3.13"
 dependencies = [
     "python-dotenv (>=1.1.0,<2.0.0)",
     "telebot (>=0.0.5,<0.0.6)",
-    "pandas (>=2.2.3,<3.0.0)"
+    "pandas (>=2.2.3,<3.0.0)",
+    "pytz (>=2025.2,<2026.0)"
 ]
 
 
