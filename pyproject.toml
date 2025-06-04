@@ -12,7 +12,8 @@ dependencies = [
     "telebot (>=0.0.5,<0.0.6)",
     "pandas (>=2.2.3,<3.0.0)",
     "pytz (>=2025.2,<2026.0)",
-    "imaplib2 (>=3.6,<4.0)"
+    "imaplib2 (>=3.6,<4.0)",
+    "python-dateutil (>=2.9.0.post0,<3.0.0)"
 ]
 
 
