@@ -255,4 +255,13 @@ def run_daily_update():
 
 if __name__ == '__main__':
     logger.info("Запуск сервиса обновления базы данных...")
+    db_manager = DatabaseManager(DB_FILE)
+    logger.info("Пробую скачать и обновить базу из последнего письма...")
+    if download_latest_excel():
+        if db_manager.update_from_excel(EXCEL_FILENAME):
+            logger.info("✅ База данных успешно обновлена при запуске")
+        else:
+            logger.error("❌ Не удалось обновить базу данных при запуске")
+    else:
+        logger.warning("❗ Не удалось скачать последний Excel-файл при запуске")
     run_daily_update()
