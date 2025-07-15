@@ -232,52 +232,54 @@ def handle_message(message):
         user_text = message.text
         logger.info(f"Запрос от {message.from_user.id}: {user_text}")
 
-        # Извлекаем все возможные артикулы из сообщения
-        articles = []
+        # Новый универсальный паттерн для артикулов: буквы, цифры, -, /, длина >= 4
+        article_pattern = r"[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9\-/]{2,}[A-Za-zА-Яа-яЁё0-9]"
+        articles = re.findall(article_pattern, user_text)
+        articles = list(set(articles))  # Убираем дубли
 
-        # Ищем формат с пробелами и разделителями (например, "3760 0071 12")
-        space_pattern = r'\b(?:\d+\s+){2,}\d+(?:\/[A-Z]+\d+)?\b'
-        space_articles = re.findall(space_pattern, user_text)
-        articles.extend(space_articles)
-
-        # Ищем формат с латинскими буквами (например, "RC1206JR-076R8L")
-        alpha_pattern = r'[A-Za-z][A-Za-z\d]{4,}(?:-\d+[A-Za-z]\d+)?'
-        alpha_articles = re.findall(alpha_pattern, user_text)
-        articles.extend(alpha_articles)
-
-        # Если не нашли ни одного артикула в специальных форматах,
-        # пытаемся найти простые числа длиной >= 5 символов
-        if not articles:
-            simple_pattern = r'\b\d{5,}\b'
-            simple_articles = re.findall(simple_pattern, user_text)
-            articles.extend(simple_articles)
+        # Фильтруем слишком короткие и неартикульные слова
+        articles = [a for a in articles if len(a) >= 4 and any(c.isdigit() for c in a)]
 
         if not articles:
             bot.send_message(message.chat.id, "⛔️ Не найден артикул в сообщении.")
             return
 
-        # Обрабатываем каждый найденный артикул
         for article in articles:
             logger.info(f"Найден артикул: {article}")
-
-            # Очищаем артикул для поиска в базе данных
-            article_clean = re.sub(r'[^\d]', '', article)
-
             bot.send_chat_action(message.chat.id, 'typing')
-            products = db_manager.search_products(article_clean)
+            # Поиск по article (точное совпадение)
+            with db_lock:
+                conn = sqlite3.connect(DB_FILE)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT * FROM products WHERE article = ? ORDER BY warehouse, period DESC
+                ''', (article,))
+                columns = [column[0] for column in cursor.description]
+                products = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                conn.close()
 
             if not products:
-                bot.send_message(message.chat.id,
-                                 f"❌ Артикул {article} не найден в базе.")
+                bot.send_message(message.chat.id, f"❌ Артикул {article} не найден в базе.")
                 continue
 
-            # Отправляем информацию о продукте
-            for product in products[:5]:
-                bot.send_message(message.chat.id, format_product_info(product))
+            # Собираем уникальные даты установки цены
+            price_dates = set(p['price_date'] for p in products if p['price_date'])
+            price_dates_str = ', '.join(sorted(price_dates)) if price_dates else '—'
 
-            if len(products) > 5:
-                bot.send_message(message.chat.id,
-                                 f"ℹ️ Показано 5 из {len(products)} записей. Уточните артикул для более точного поиска.")
+            # Формируем ответ
+            msg = f"🔎 Артикул: {article}\n"
+            msg += f"📅 Дата установки цены: {price_dates_str}\n"
+            msg += f"\n"
+            for product in products:
+                msg += (
+                    f"🏭 Склад: {product['warehouse'] or '—'}\n"
+                    f"📊 Остаток: {product['quantity'] or '—'}\n"
+                    f"💰 Цена: {product['price'] or '—'} {product['currency'] or ''}\n"
+                    f"🏷 Наименование: {product['name'] or '—'}\n"
+                    f"🔢 Код: {product['code'] or '—'}\n"
+                    f"\n"
+                )
+            bot.send_message(message.chat.id, msg.strip())
 
     except Exception as e:
         logger.error(f"Ошибка при обработке сообщения: {e}")
