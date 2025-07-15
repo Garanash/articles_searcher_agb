@@ -265,11 +265,12 @@ def handle_message(message):
             # Собираем уникальные даты установки цены
             price_dates = set(p['price_date'] for p in products if p['price_date'])
             price_dates_str = ', '.join(sorted(price_dates)) if price_dates else '—'
+            # Дата последнего обновления базы (берём максимальную из last_updated)
+            last_updated_list = [p['last_updated'] for p in products if p.get('last_updated')]
+            last_updated_str = max(last_updated_list) if last_updated_list else '—'
 
-            # Формируем ответ
-            msg = f"🔎 Артикул: {article}\n"
-            msg += f"📅 Дата установки цены: {price_dates_str}\n"
-            msg += f"\n"
+            # Формируем ответ по складам
+            msg = f"🔎 Артикул: {article}\n\n"
             for product in products:
                 msg += (
                     f"🏭 Склад: {product['warehouse'] or '—'}\n"
@@ -280,6 +281,8 @@ def handle_message(message):
                     f"\n"
                 )
             bot.send_message(message.chat.id, msg.strip())
+            # Отдельным сообщением — дата установки цены и дата обновления базы
+            bot.send_message(message.chat.id, f"📅 Дата установки цены: {price_dates_str}\n🕒 Дата обновления базы: {last_updated_str}")
 
     except Exception as e:
         logger.error(f"Ошибка при обработке сообщения: {e}")
