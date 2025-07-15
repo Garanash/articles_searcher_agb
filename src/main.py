@@ -185,8 +185,16 @@ def format_product_info(product):
     )
 
 
+ALLOWED_USERS = {
+    7513623853, 291591740, 308980455, 880161173, 7812414563, 459890220, 972172071, 747358781, 1654230, 7965375521, 7408230278, 262440194, 431233023, 913802510, 213653502, 293959414, 7426490187, 6577259391, 7825850418, 597558526
+}
+
+
 @bot.message_handler(commands=['start', 'help'])
 def handle_start_help(message):
+    if message.from_user.id not in ALLOWED_USERS:
+        bot.send_message(message.chat.id, "доступ запрещен")
+        return
     help_text = (
         "🔍 *Бот для поиска товаров по артикулу*\n\n"
         "Отправьте мне артикул товара — и я найду его в базе.\n"
@@ -199,6 +207,9 @@ def handle_start_help(message):
 
 @bot.message_handler(commands=['reload'])
 def handle_reload(message):
+    if message.from_user.id not in ALLOWED_USERS:
+        bot.send_message(message.chat.id, "доступ запрещен")
+        return
     try:
         bot.send_message(message.chat.id, "🔄 Перезагружаю базу данных...")
         success = db_manager.update_from_excel(EXCEL_FILE)
@@ -214,6 +225,9 @@ def handle_reload(message):
 @bot.message_handler(func=lambda message: True)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
+    if message.from_user.id not in ALLOWED_USERS:
+        bot.send_message(message.chat.id, "доступ запрещен")
+        return
     try:
         user_text = message.text
         logger.info(f"Запрос от {message.from_user.id}: {user_text}")
