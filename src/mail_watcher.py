@@ -117,7 +117,9 @@ class DatabaseManager:
                 conn.commit()
                 conn.close()
 
-            logger.info(f"✅ База данных успешно обновлена. Записей: {len(df)}")
+            n_articles = df['Артикул'].nunique()
+            n_warehouses = df['Склад'].nunique()
+            logger.info(f"✅ База данных успешно обновлена. Записей: {len(df)} | Уникальных артикулов: {n_articles} | Уникальных складов: {n_warehouses}")
             return True
         except Exception as e:
             logger.error(f"Ошибка при обновлении базы данных: {e}")
@@ -160,24 +162,27 @@ def is_target_email(msg):
 
 
 def download_latest_excel():
-    """Скачивает последний Excel-файл из целевого письма"""
+    """Скачивает самый последний Excel-файл (.xlsx) из писем от целевого отправителя."""
     mail = None
     try:
         mail = imaplib.IMAP4_SSL(IMAP_SERVER)
         mail.login(EMAIL, EMAIL_PASSWORD)
         mail.select('INBOX')
 
-        status, messages = mail.search(None, f'(FROM "{TARGET_SENDER}" UNSEEN)')
+        # Ищем все письма от нужного отправителя (не только непрочитанные)
+        status, messages = mail.search(None, f'(FROM "{TARGET_SENDER}")')
         if status != 'OK':
             logger.warning("Не удалось выполнить поиск писем")
             return False
 
         message_ids = messages[0].split()
+        logger.info(f"Найдено писем от {TARGET_SENDER}: {len(message_ids)}")
         if not message_ids:
-            logger.info("Нет новых писем от целевого отправителя")
+            logger.info("Нет писем от целевого отправителя")
             return False
 
-        for msg_id in message_ids[::-1]:
+        # Берём последнее письмо (самое свежее)
+        for msg_id in reversed(message_ids):
             status, msg_data = mail.fetch(msg_id, '(RFC822)')
             if status != 'OK':
                 continue
@@ -188,6 +193,7 @@ def download_latest_excel():
 
             logger.info(f"Обработка письма: {decode_mail_header(msg.get('Subject', ''))}")
 
+            found_xlsx = False
             for part in msg.walk():
                 if part.get_content_maintype() == 'multipart':
                     continue
@@ -197,23 +203,24 @@ def download_latest_excel():
                     continue
 
                 filename = decode_mail_header(filename)
+                logger.info(f"Найдено вложение: {filename}")
                 if not filename.lower().endswith('.xlsx'):
                     continue
 
                 try:
                     with open(EXCEL_FILENAME, 'wb') as f:
                         f.write(part.get_payload(decode=True))
-
                     logger.info(f"Файл {filename} успешно сохранен как {EXCEL_FILENAME}")
+                    found_xlsx = True
                     mail.store(msg_id, '+FLAGS', '\\Seen')
-                    return True
+                    break
                 except Exception as e:
                     logger.error(f"Ошибка при сохранении файла: {e}")
                     continue
-
-        logger.info("Не найдено подходящих писем с Excel-файлами")
+            if found_xlsx:
+                return True
+        logger.warning("Не найдено ни одного Excel-файла (.xlsx) во вложениях писем!")
         return False
-
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         return False
