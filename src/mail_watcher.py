@@ -11,6 +11,7 @@ import pytz
 import sqlite3
 import pandas as pd
 import re
+import difflib
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -224,6 +225,63 @@ def download_latest_excel():
                 pass
 
 
+def compare_excel_with_db(excel_file, db_file):
+    """Сравнивает данные из Excel-файла с текущей базой и пишет различия в лог."""
+    if not os.path.exists(excel_file):
+        logger.error(f"Файл {excel_file} не найден для сравнения.")
+        return
+    try:
+        df_new = pd.read_excel(excel_file)
+        df_new = df_new.where(pd.notnull(df_new), None)
+        df_new['article_clean'] = df_new['Артикул'].apply(lambda x: re.sub(r'[^\d]', '', str(x)))
+        new_dict = {}
+        for _, row in df_new.iterrows():
+            key = (str(row.get('Артикул')), str(row.get('Склад')))
+            new_dict[key] = {
+                'quantity': row.get('Остаток'),
+                'price': row.get('Цена'),
+                'currency': row.get('Валюта'),
+                'price_date': row.get('Дата установки цены'),
+                'name': row.get('Номенклатура'),
+                'code': row.get('Номенклатура.Код'),
+            }
+
+        with db_lock:
+            conn = sqlite3.connect(db_file)
+            cursor = conn.cursor()
+            cursor.execute('SELECT article, warehouse, quantity, price, currency, price_date, name, code FROM products')
+            db_dict = {}
+            for row in cursor.fetchall():
+                key = (str(row[0]), str(row[1]))
+                db_dict[key] = {
+                    'quantity': row[2],
+                    'price': row[3],
+                    'currency': row[4],
+                    'price_date': row[5],
+                    'name': row[6],
+                    'code': row[7],
+                }
+            conn.close()
+
+        added = set(new_dict.keys()) - set(db_dict.keys())
+        removed = set(db_dict.keys()) - set(new_dict.keys())
+        changed = []
+        for key in set(new_dict.keys()) & set(db_dict.keys()):
+            changes = {}
+            for field in new_dict[key]:
+                if str(new_dict[key][field]) != str(db_dict[key][field]):
+                    changes[field] = {'old': db_dict[key][field], 'new': new_dict[key][field]}
+            if changes:
+                changed.append((key, changes))
+
+        logger.info(f"Сравнение с текущей базой:")
+        logger.info(f"Будет добавлено: {len(added)} записей: {list(added)[:10]}")
+        logger.info(f"Будет удалено: {len(removed)} записей: {list(removed)[:10]}")
+        logger.info(f"Будет изменено: {len(changed)} записей. Примеры изменений: {changed[:5]}")
+    except Exception as e:
+        logger.error(f"Ошибка при сравнении Excel и БД: {e}")
+
+
 def run_daily_update():
     """Запускает ежедневное обновление в 20:00 по Москве"""
     db_manager = DatabaseManager(DB_FILE)
@@ -243,6 +301,7 @@ def run_daily_update():
 
             logger.info("Начало ежедневного обновления...")
             if download_latest_excel():
+                compare_excel_with_db(EXCEL_FILENAME, DB_FILE)
                 if db_manager.update_from_excel(EXCEL_FILENAME):
                     logger.info("✅ База данных успешно обновлена")
                 else:
@@ -258,6 +317,7 @@ if __name__ == '__main__':
     db_manager = DatabaseManager(DB_FILE)
     logger.info("Пробую скачать и обновить базу из последнего письма...")
     if download_latest_excel():
+        compare_excel_with_db(EXCEL_FILENAME, DB_FILE)
         if db_manager.update_from_excel(EXCEL_FILENAME):
             logger.info("✅ База данных успешно обновлена при запуске")
         else:
