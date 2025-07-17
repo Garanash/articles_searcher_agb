@@ -269,15 +269,20 @@ def handle_message(message):
             last_updated_list = [p['last_updated'] for p in products if p.get('last_updated')]
             last_updated_str = max(last_updated_list) if last_updated_list else '—'
 
-            # Формируем ответ по складам
-            msg = f"🔎 Артикул: {article}\n\n"
+            # Информация об артикуле (берём из первой записи)
+            main = products[0]
+            msg = (
+                f"🔎 Артикул: {article}\n"
+                f"💰 Цена: {main['price'] or '—'} {main['currency'] or ''}\n"
+                f"🏷 Наименование: {main['name'] or '—'}\n"
+                f"🔢 Код: {main['code'] or '—'}\n"
+                f"\n"
+            )
+            # По каждому складу — только склад и остаток
             for product in products:
                 msg += (
                     f"🏭 Склад: {product['warehouse'] or '—'}\n"
                     f"📊 Остаток: {product['quantity'] or '—'}\n"
-                    f"💰 Цена: {product['price'] or '—'} {product['currency'] or ''}\n"
-                    f"🏷 Наименование: {product['name'] or '—'}\n"
-                    f"🔢 Код: {product['code'] or '—'}\n"
                     f"\n"
                 )
             bot.send_message(message.chat.id, msg.strip())
